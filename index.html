@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>드립백 생산 관리 시스템</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700&display=swap" rel="stylesheet"/>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Noto Sans KR', sans-serif; background: linear-gradient(160deg,#0f0800,#251405,#0f0800); min-height: 100vh; color: #f0e6d3; }
+input, select { font-family: inherit; }
+select option { background: #2a1505; color: #f0e6d3; }
+::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1a0e00; } ::-webkit-scrollbar-thumb { background: #c8821a; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// ════════════════════════════════════════════
+// ⚠️ 여기에 Supabase 정보 입력
+// ════════════════════════════════════════════
+const SUPABASE_URL = "https://tfeeujepuxmnokbygpgw.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRmZWV1amVwdXhtbm9rYnlncGd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI1MTg3MDgsImV4cCI6MjA4ODA5NDcwOH0.TAyPg2Fs2Uo0iYR4r2ffePXDn2dFtyp3EGoTthH5MXU";
+// ════════════════════════════════════════════
+
+const { createClient } = supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+const { useState, useEffect, useRef } = React;
+
+const CHANNELS = ["대형플랫폼", "온라인"];
+const PW = "486";
+
+function parseDate(raw) {
+  if (!raw) return null;
+  const s = String(raw).replace(/-/g,"").trim();
+  if (s.length!==8) return null;
+  const d = new Date(`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`);
+  return isNaN(d)?null:d;
+}
+function fmtDate(d) {
+  if (!d) return "-";
+  const dt = typeof d==="string"?new Date(d):d;
+  return isNaN(dt)? "-" : dt.toISOString().slice(0,10).replace(/-/g,"");
+}
+function minDate(arr) {
+  const v=arr.filter(Boolean).map(x=>typeof x==="string"?new Date(x):x);
+  return v.length?v.reduce((a,b)=>a<b?a:b):null;
+}
+function fifoDeduct(stock, sCode, need) {
+  const sorted=stock.filter(s=>s.s_code===sCode&&s.qty>0).sort((a,b)=>new Date(a.expiry)-new Date(b.expiry));
+  let rem=need; const used=[]; const next=stock.map(s=>({...s}));
+  for(const s of sorted){
+    if(rem<=0)break;
+    const take=Math.min(s.qty,rem);
+    used.push({expiry:s.expiry,qty:take,id:s.id});
+    rem-=take;
+    const idx=next.findIndex(x=>x.id===s.id);
+    if(idx!==-1)next[idx].qty-=take;
+  }
+  return{ok:rem===0,used,next,shortage:rem};
+}
+
+// 비밀번호 모달
+function PwModal({title,desc,onConfirm,onClose}){
+  const [pw,setPw]=useState(""); const [err,setErr]=useState(false);
+  const submit=()=>{ if(pw===PW){onConfirm();onClose();}else{setErr(true);setPw("");} };
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.78)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999}}>
+      <div style={{background:"#2a1505",border:"2px solid #c8821a",borderRadius:16,padding:"30px 34px",minWidth:300,textAlign:"center",boxShadow:"0 0 40px rgba(200,130,26,.4)"}}>
+        <div style={{fontSize:30,marginBottom:6}}>🔐</div>
+        <div style={{color:"#f5c97a",fontWeight:700,fontSize:16,marginBottom:5}}>{title}</div>
+        {desc&&<div style={{color:"#c8a06a",fontSize:12,marginBottom:16}}>{desc}</div>}
+        <input type="password" value={pw} autoFocus
+          onChange={e=>{setPw(e.target.value);setErr(false);}}
+          onKeyDown={e=>e.key==="Enter"&&submit()}
+          placeholder="비밀번호 입력"
+          style={{width:"100%",padding:"9px 13px",borderRadius:8,fontSize:15,background:"rgba(255,255,255,.07)",border:`1px solid ${err?"#e07070":"#c8821a"}`,color:"#f0e6d3",outline:"none",marginBottom:6}}/>
+        {err&&<div style={{color:"#e07070",fontSize:12,marginBottom:6}}>❌ 비밀번호가 틀렸습니다.</div>}
+        <div style={{display:"flex",gap:8,marginTop:10}}>
+          <button onClick={onClose} style={{flex:1,padding:"8px",borderRadius:8,border:"none",background:"rgba(255,255,255,.07)",color:"#c8a06a",cursor:"pointer"}}>취소</button>
+          <button onClick={submit}  style={{flex:1,padding:"8px",borderRadius:8,border:"none",background:"#c8821a",color:"#fff",fontWeight:700,cursor:"pointer"}}>확인</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const [tab,setTab]=useState("낱개재고");
+  const [sMaster,setSMaster]=useState([]);
+  const [pMaster,setPMaster]=useState([]);
+  const [bomData,setBomData]=useState([]);
+  const [stock,setStock]=useState([]);
+  const [orders,setOrders]=useState([]);
+  const [prodLog,setProdLog]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [pwModal,setPwModal]=useState(null);
+  const xlsxRef=useRef();
+
+  const [stockForm,setStockForm]=useState({sCode:"",expiry:"",qty:""});
+  const [orderForm,setOrderForm]=useState({pCode:"",channel:"대형플랫폼",qty:"",priority:""});
+  const [bomPCode,setBomPCode]=useState("");
+  const [newComp,setNewComp]=useState({sCode:"",qty:""});
+  const [newSingle,setNewSingle]=useState({code:"",name:""});
+  const [newProduct,setNewProduct]=useState({code:"",name:""});
+
+  useEffect(()=>{
+    loadAll();
+    const ch=[
+      sb.channel('stock').on('postgres_changes',{event:'*',schema:'public',table:'stock'},()=>loadStock()),
+      sb.channel('orders').on('postgres_changes',{event:'*',schema:'public',table:'orders'},()=>loadOrders()),
+      sb.channel('log').on('postgres_changes',{event:'*',schema:'public',table:'prod_log'},()=>loadLog()),
+      sb.channel('sm').on('postgres_changes',{event:'*',schema:'public',table:'single_master'},()=>loadMasters()),
+      sb.channel('pm').on('postgres_changes',{event:'*',schema:'public',table:'product_master'},()=>loadMasters()),
+      sb.channel('bom').on('postgres_changes',{event:'*',schema:'public',table:'bom'},()=>loadBom()),
+    ];
+    ch.forEach(c=>c.subscribe());
+    return()=>ch.forEach(c=>sb.removeChannel(c));
+  },[]);
+
+  const loadAll=async()=>{ setLoading(true); await Promise.all([loadMasters(),loadBom(),loadStock(),loadOrders(),loadLog()]); setLoading(false); };
+  const loadMasters=async()=>{
+    const [{data:sm},{data:pm}]=await Promise.all([
+      sb.from("single_master").select("*").order("code"),
+      sb.from("product_master").select("*").order("code"),
+    ]);
+    if(sm){setSMaster(sm);setStockForm(f=>({...f,sCode:f.sCode||sm[0]?.code||""}));}
+    if(pm){setPMaster(pm);setOrderForm(f=>({...f,pCode:f.pCode||pm[0]?.code||""}));setBomPCode(p=>p||pm[0]?.code||"");}
+  };
+  const loadBom=async()=>{ const{data}=await sb.from("bom").select("*"); if(data)setBomData(data); };
+  const loadStock=async()=>{ const{data}=await sb.from("stock").select("*").order("expiry"); if(data)setStock(data); };
+  const loadOrders=async()=>{ const{data}=await sb.from("orders").select("*").order("priority"); if(data)setOrders(data); };
+  const loadLog=async()=>{ const{data}=await sb.from("prod_log").select("*").order("created_at",{ascending:false}); if(data)setProdLog(data); };
+
+  const sName=code=>sMaster.find(s=>s.code===code)?.name||code;
+  const pName=code=>pMaster.find(p=>p.code===code)?.name||code;
+  const askPw=(title,desc,action)=>setPwModal({title,desc,action});
+  const bomOf=pCode=>bomData.filter(b=>b.p_code===pCode);
+  const stockSummary=sMaster.map(s=>({...s,total:stock.filter(x=>x.s_code===s.code).reduce((a,b)=>a+b.qty,0)}));
+
+  // 낱개 재고
+  const addStock=async()=>{
+    const{sCode,expiry,qty}=stockForm;
+    if(!sCode||!expiry||!qty)return alert("모든 항목을 입력해주세요.");
+    const d=parseDate(expiry); if(!d)return alert("소비기한 형식 오류");
+    const{error}=await sb.from("stock").insert({s_code:sCode,expiry:d.toISOString().slice(0,10),qty:parseInt(qty)});
+    if(error)return alert("저장 오류: "+error.message);
+    setStockForm(f=>({...f,expiry:"",qty:""}));
+  };
+  const updateStockQty=async(id,qty)=>{ await sb.from("stock").update({qty:Math.max(0,parseInt(qty)||0)}).eq("id",id); };
+  const delStock=id=>askPw("낱개 재고 삭제","해당 행이 삭제됩니다.",async()=>{ await sb.from("stock").delete().eq("id",id); });
+  const resetStock=()=>askPw("낱개 재고 전체 초기화","모든 재고가 삭제됩니다.",async()=>{ await sb.from("stock").delete().gt("qty",-999999); });
+
+  // 엑셀 업로드
+  const handleExcel=async(e)=>{
+    const file=e.target.files[0]; if(!file)return;
+    try{
+      const buf=await file.arrayBuffer();
+      const wb=XLSX.read(buf);
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+      const toInsert=[],skipped=[];
+      for(let i=1;i<rows.length;i++){
+        const[raw,rawExp,rawQty]=rows[i]; if(!raw)continue;
+        const key=String(raw).trim();
+        const master=sMaster.find(s=>s.code===key||s.name===key);
+        if(!master){skipped.push(key);continue;}
+        const expiry=parseDate(rawExp); const qty=parseInt(rawQty);
+        if(!expiry||isNaN(qty)||qty<=0){skipped.push(key);continue;}
+        toInsert.push({s_code:master.code,expiry:expiry.toISOString().slice(0,10),qty});
+      }
+      if(!toInsert.length)return alert(`업로드 데이터 없음\n미등록: ${skipped.join(", ")||"없음"}`);
+      const{error}=await sb.from("stock").insert(toInsert);
+      if(error)return alert("업로드 오류: "+error.message);
+      alert(`✅ ${toInsert.length}행 업로드 완료${skipped.length?`\n⚠️ 매칭 실패: ${skipped.join(", ")}`:""}`);
+    }catch(err){alert("파일 오류: "+err.message);}
+    e.target.value="";
+  };
+
+  // 완제품 주문
+  const addOrder=async()=>{
+    const{pCode,channel,qty,priority}=orderForm;
+    if(!pCode||!qty||parseInt(qty)<=0)return alert("수량을 입력해주세요.");
+    const nextP=orders.length>0?Math.max(...orders.map(o=>o.priority))+1:1;
+    const{error}=await sb.from("orders").insert({p_code:pCode,channel,qty:parseInt(qty),priority:parseInt(priority)||nextP,status:"대기"});
+    if(error)return alert("저장 오류: "+error.message);
+    setOrderForm(f=>({...f,qty:"",priority:""}));
+  };
+  const delOrder=id=>askPw("생산 주문 삭제","해당 주문이 삭제됩니다.",async()=>{ await sb.from("orders").delete().eq("id",id); });
+  const resetOrders=()=>askPw("완제품 주문 전체 초기화","모든 주문이 삭제됩니다.",async()=>{ await sb.from("orders").delete().gt("priority",-999999); });
+
+  // FIFO 투입
+  const invest=async(orderId)=>{
+    const order=orders.find(o=>o.id===orderId); if(!order)return;
+    const recipe=bomOf(order.p_code);
+    if(!recipe.length)return alert("BOM이 설정되지 않은 제품입니다.");
+    let ws=[...stock]; const details=[],errors=[];
+    for(const comp of recipe){
+      const need=comp.qty*order.qty;
+      const{ok,used,next,shortage}=fifoDeduct(ws,comp.s_code,need);
+      if(!ok)errors.push(`[${sName(comp.s_code)}] ${shortage}개 부족`);
+      else{ws=next;details.push({sCode:comp.s_code,used,total:need});}
+    }
+    if(errors.length){alert(`⚠️ 생산 불가 — 낱개 재고 부족\n\n${errors.join("\n")}`);return;}
+    const allExp=details.flatMap(d=>d.used.map(u=>u.expiry));
+    const finExp=minDate(allExp);
+    for(const row of ws){
+      const orig=stock.find(s=>s.id===row.id);
+      if(orig&&orig.qty!==row.qty) await sb.from("stock").update({qty:row.qty}).eq("id",row.id);
+    }
+    const detail={details,finExp:finExp?finExp.toISOString().slice(0,10):null};
+    await sb.from("orders").update({status:"완료",detail}).eq("id",orderId);
+    await sb.from("prod_log").insert({order_id:orderId,p_code:order.p_code,channel:order.channel,qty:order.qty,fin_exp:finExp?finExp.toISOString().slice(0,10):null,details});
+  };
+
+  // 마스터
+  const addSMaster=async()=>{
+    const{code,name}=newSingle; if(!code.trim()||!name.trim())return alert("코드와 이름을 입력하세요.");
+    const{error}=await sb.from("single_master").insert({code:code.trim().toUpperCase(),name:name.trim()});
+    if(error)return alert(error.code==="23505"?"이미 존재하는 코드입니다.":"오류: "+error.message);
+    setNewSingle({code:"",name:""});
+  };
+  const delSMaster=code=>askPw("낱개 코드 삭제",`[${code}] ${sName(code)}`,async()=>{ await sb.from("single_master").delete().eq("code",code); });
+  const addPMaster=async()=>{
+    const{code,name}=newProduct; if(!code.trim()||!name.trim())return alert("코드와 이름을 입력하세요.");
+    const{error}=await sb.from("product_master").insert({code:code.trim().toUpperCase(),name:name.trim()});
+    if(error)return alert(error.code==="23505"?"이미 존재하는 코드입니다.":"오류: "+error.message);
+    setNewProduct({code:"",name:""});
+  };
+  const delPMaster=code=>askPw("완제품 코드 삭제",`[${code}] ${pName(code)}`,async()=>{
+    await sb.from("product_master").delete().eq("code",code);
+    await sb.from("bom").delete().eq("p_code",code);
+  });
+
+  // BOM
+  const addBomComp=async()=>{
+    const{sCode,qty}=newComp; if(!sCode||!qty)return alert("구성품과 수량을 입력하세요.");
+    if(bomOf(bomPCode).length>=10)return alert("최대 10개까지 등록 가능합니다.");
+    if(bomOf(bomPCode).find(c=>c.s_code===sCode))return alert("이미 추가된 구성품입니다.");
+    const{error}=await sb.from("bom").insert({p_code:bomPCode,s_code:sCode,qty:parseInt(qty)});
+    if(error)return alert("오류: "+error.message);
+    setNewComp(f=>({...f,qty:""}));
+  };
+  const delBomComp=(id,sCode)=>askPw("BOM 구성품 삭제",`[${sName(sCode)}] 삭제됩니다.`,async()=>{ await sb.from("bom").delete().eq("id",id); });
+  const editBomQty=async(id,val)=>{ await sb.from("bom").update({qty:parseInt(val)||1}).eq("id",id); };
+  const resetLog=()=>askPw("생산 로그 초기화","모든 로그가 삭제됩니다.",async()=>{ await sb.from("prod_log").delete().gt("qty",-999999); });
+
+  const sortedOrders=[...orders].sort((a,b)=>a.priority-b.priority);
+
+  // 스타일 상수
+  const inp={background:"rgba(255,255,255,.07)",border:"1px solid #c8821a55",borderRadius:6,color:"#f0e6d3",padding:"6px 10px",fontSize:13,outline:"none",width:130,fontFamily:"inherit"};
+  const sel={...inp,cursor:"pointer",width:"auto"};
+  const lbl={fontSize:12,color:"#c8a06a",marginBottom:4};
+  const primaryBtn={border:"none",borderRadius:8,padding:"8px 20px",fontSize:14,cursor:"pointer",background:"linear-gradient(135deg,#c8821a,#e8a030)",color:"#fff",fontWeight:700,fontFamily:"inherit"};
+  const delBtn={background:"rgba(180,50,50,.2)",border:"1px solid #c0444433",color:"#e07070",borderRadius:6,padding:"4px 10px",fontSize:13,cursor:"pointer",fontFamily:"inherit"};
+  const resetBtn={border:"1px solid #c0444444",borderRadius:8,padding:"7px 15px",fontSize:13,cursor:"pointer",background:"rgba(180,50,50,.15)",color:"#e07070",fontFamily:"inherit"};
+
+  const LblInp=({label,value,onChange,type="text",placeholder,width})=>(
+    <div>
+      <div style={lbl}>{label}</div>
+      <input type={type} value={value} placeholder={placeholder} onChange={e=>onChange(e.target.value)} style={{...inp,width:width||130}}/>
+    </div>
+  );
+  const SecTitle=({icon,title})=>(
+    <div style={{display:"flex",alignItems:"center",gap:8,fontSize:16,fontWeight:700,color:"#f5c97a",marginBottom:14,borderLeft:"3px solid #c8821a",paddingLeft:12}}>
+      {icon} {title}
+    </div>
+  );
+  const Tbl=({headers,children})=>(
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",background:"rgba(255,255,255,.03)",border:"1px solid #c8821a33",fontSize:14}}>
+        <thead><tr style={{background:"rgba(200,130,26,.18)"}}>
+          {headers.map(h=><th key={h} style={{padding:"9px 14px",textAlign:"left",color:"#f5c97a",fontWeight:600,fontSize:13,borderBottom:"1px solid #c8821a44"}}>{h}</th>)}
+        </tr></thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  );
+  const Td=({children,style})=><td style={{padding:"8px 14px",borderBottom:"1px solid #c8821a22",verticalAlign:"middle",...style}}>{children}</td>;
+
+  if(loading)return(
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16,color:"#c8a06a"}}>
+      <div style={{fontSize:40}}>☕</div>
+      <div style={{fontSize:16}}>데이터 불러오는 중...</div>
+    </div>
+  );
+
+  return(
+    <div style={{minHeight:"100vh"}}>
+      {pwModal&&<PwModal title={pwModal.title} desc={pwModal.desc} onConfirm={()=>{pwModal.action();setPwModal(null);}} onClose={()=>setPwModal(null)}/>}
+
+      {/* 헤더 */}
+      <div style={{background:"linear-gradient(90deg,#3a1c00,#6b3a1f,#3a1c00)",borderBottom:"2px solid #c8821a",padding:"15px 26px",display:"flex",alignItems:"center",gap:12,boxShadow:"0 4px 24px rgba(200,130,26,.3)",flexWrap:"wrap"}}>
+        <span style={{fontSize:28}}>☕</span>
+        <div>
+          <div style={{fontSize:18,fontWeight:700,color:"#f5c97a",letterSpacing:1}}>드립백 생산 관리 시스템</div>
+          <div style={{fontSize:11,color:"#6fcf97"}}>🟢 실시간 연동 중 · FIFO · BOM · MASTER CODE</div>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",gap:5,flexWrap:"wrap"}}>
+          {["낱개재고","완제품생산","BOM관리","제품마스터","생산로그"].map(t=>(
+            <button key={t} onClick={()=>setTab(t)} style={{padding:"5px 14px",borderRadius:20,border:"none",cursor:"pointer",background:tab===t?"#c8821a":"rgba(255,255,255,.08)",color:tab===t?"#fff":"#c8a06a",fontWeight:tab===t?700:400,fontSize:13,fontFamily:"inherit"}}>{t}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{padding:"22px 26px",maxWidth:1300,margin:"0 auto"}}>
+
+        {/* ════ 낱개 재고 ════ */}
+        {tab==="낱개재고"&&(
+          <div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
+              <SecTitle icon="📦" title="낱개 재고 현황"/>
+              <div style={{display:"flex",gap:8}}>
+                <input ref={xlsxRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleExcel} style={{display:"none"}}/>
+                <button onClick={()=>xlsxRef.current.click()} style={{...resetBtn,background:"#1a4020",color:"#6fcf97",border:"1px solid #4caf5055"}}>📊 엑셀 업로드</button>
+                <button onClick={resetStock} style={resetBtn}>🗑 전체 리셋</button>
+              </div>
+            </div>
+            <div style={{background:"rgba(76,175,80,.1)",border:"1px solid #4caf5033",borderRadius:8,padding:"7px 13px",fontSize:12,color:"#8ecf90",marginBottom:14}}>
+              📋 엑셀 형식 — <b>A열: 제품코드(S001) 또는 제품명</b> | <b>B열: 소비기한(YYYYMMDD)</b> | <b>C열: 수량</b> ※ 1행 헤더 skip
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:14}}>
+              {stockSummary.map(s=>(
+                <div key={s.code} style={{background:"rgba(200,130,26,.13)",border:`1px solid ${s.total===0?"#c0444444":"#c8821a44"}`,borderRadius:20,padding:"4px 13px",fontSize:13}}>
+                  <span style={{color:"#9a7050",fontSize:11,marginRight:4}}>{s.code}</span>
+                  <span style={{color:s.total===0?"#e07070":"#f5c97a",fontWeight:600}}>{s.name}</span>
+                  <span style={{color:s.total===0?"#e07070":"#e0c090",marginLeft:6}}>{s.total}개</span>
+                </div>
+              ))}
+            </div>
+            <Tbl headers={["코드","제품명","소비기한","수량","삭제"]}>
+              {stock.map(s=>(
+                <tr key={s.id}>
+                  <Td><span style={{color:"#9a7050",fontSize:12}}>{s.s_code}</span></Td>
+                  <Td style={{color:"#f5c97a",fontWeight:600}}>{sName(s.s_code)}</Td>
+                  <Td style={{color:"#e0c090"}}>{fmtDate(s.expiry)}</Td>
+                  <Td><input type="number" defaultValue={s.qty} min={0} onBlur={e=>updateStockQty(s.id,e.target.value)} style={{...inp,width:80}}/></Td>
+                  <Td><button onClick={()=>delStock(s.id)} style={delBtn}>✕</button></Td>
+                </tr>
+              ))}
+            </Tbl>
+            <div style={{marginTop:24}}>
+              <SecTitle icon="➕" title="낱개 재고 직접 추가"/>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+                <div>
+                  <div style={lbl}>제품 선택</div>
+                  <select value={stockForm.sCode} onChange={e=>setStockForm(f=>({...f,sCode:e.target.value}))} style={sel}>
+                    {sMaster.map(s=><option key={s.code} value={s.code}>[{s.code}] {s.name}</option>)}
+                  </select>
+                </div>
+                <LblInp label="소비기한" type="date" value={stockForm.expiry} onChange={v=>setStockForm(f=>({...f,expiry:v}))}/>
+                <LblInp label="수량" type="number" value={stockForm.qty} onChange={v=>setStockForm(f=>({...f,qty:v}))} placeholder="0" width={90}/>
+                <button onClick={addStock} style={{...primaryBtn,alignSelf:"flex-end"}}>+ 추가</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════ 완제품 생산 ════ */}
+        {tab==="완제품생산"&&(
+          <div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+              <SecTitle icon="🏭" title="완제품 생산 주문"/>
+              <button onClick={resetOrders} style={resetBtn}>🗑 전체 리셋</button>
+            </div>
+            <div style={{background:"rgba(255,255,255,.04)",border:"1px solid #c8821a44",borderRadius:12,padding:"16px 18px",marginBottom:20}}>
+              <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end"}}>
+                <div>
+                  <div style={lbl}>완제품 선택</div>
+                  <select value={orderForm.pCode} onChange={e=>setOrderForm(f=>({...f,pCode:e.target.value}))} style={sel}>
+                    {pMaster.map(p=><option key={p.code} value={p.code}>[{p.code}] {p.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={lbl}>채널</div>
+                  <select value={orderForm.channel} onChange={e=>setOrderForm(f=>({...f,channel:e.target.value}))} style={sel}>
+                    {CHANNELS.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <LblInp label="생산수량" type="number" value={orderForm.qty} onChange={v=>setOrderForm(f=>({...f,qty:v}))} placeholder="0" width={90}/>
+                <LblInp label="우선순위" type="number" value={orderForm.priority} onChange={v=>setOrderForm(f=>({...f,priority:v}))} placeholder="자동" width={80}/>
+                <button onClick={addOrder} style={{...primaryBtn,alignSelf:"flex-end"}}>주문 등록</button>
+              </div>
+            </div>
+            {sortedOrders.length===0&&<div style={{textAlign:"center",color:"#8a6a40",padding:26,fontSize:14}}>등록된 생산 주문이 없습니다.</div>}
+            {sortedOrders.map(order=>(
+              <div key={order.id} style={{background:order.status==="완료"?"rgba(50,120,50,.14)":"rgba(255,255,255,.04)",border:`1px solid ${order.status==="완료"?"#4caf5055":"#c8821a44"}`,borderRadius:12,padding:"13px 16px",marginBottom:10}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                  <span style={{background:"#c8821a",color:"#fff",borderRadius:6,padding:"2px 9px",fontSize:11,fontWeight:700}}>P{order.priority}</span>
+                  <span style={{color:"#9a7050",fontSize:12}}>[{order.p_code}]</span>
+                  <span style={{fontWeight:700,fontSize:15,color:"#f5c97a"}}>{pName(order.p_code)}</span>
+                  <span style={{background:order.channel==="대형플랫폼"?"#1a3d5c":"#1a3a1a",color:"#aee",borderRadius:6,padding:"2px 8px",fontSize:12}}>{order.channel}</span>
+                  <span style={{color:"#e0c090"}}>{order.qty}개</span>
+                  <span style={{color:order.status==="완료"?"#6fcf97":"#f2c94c",fontWeight:600}}>{order.status}</span>
+                  <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+                    {order.status==="대기"&&<button onClick={()=>invest(order.id)} style={{...primaryBtn,fontSize:13,padding:"5px 14px"}}>낱개 투입</button>}
+                    <button onClick={()=>delOrder(order.id)} style={delBtn}>✕</button>
+                  </div>
+                </div>
+                {order.status==="완료"&&order.detail&&(
+                  <div style={{marginTop:10,background:"rgba(0,0,0,.2)",borderRadius:8,padding:"10px 14px",fontSize:13}}>
+                    <div style={{color:"#6fcf97",fontWeight:700,marginBottom:8}}>
+                      ✅ 완제품 소비기한: <span style={{fontSize:15}}>{fmtDate(order.detail.finExp)}</span>
+                      {order.channel==="대형플랫폼"&&<span style={{marginLeft:8,fontSize:11,color:"#f2c94c"}}>⚡ 대형플랫폼 — 소비기한 동일 여부 확인</span>}
+                    </div>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      {(order.detail.details||[]).map((c,i)=>(
+                        <div key={i} style={{background:"rgba(200,130,26,.14)",borderRadius:6,padding:"5px 11px",fontSize:12}}>
+                          <span style={{color:"#9a7050",fontSize:11}}>[{c.sCode}] </span>
+                          <span style={{color:"#f5c97a",fontWeight:600}}>{sName(c.sCode)}</span>
+                          <span style={{color:"#c8a06a",marginLeft:4}}>×{c.total}</span>
+                          <div style={{color:"#9a8060",fontSize:11,marginTop:2}}>
+                            {(c.used||[]).map((u,j)=><span key={j} style={{marginRight:5}}>{fmtDate(u.expiry)}({u.qty})</span>)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ════ BOM 관리 ════ */}
+        {tab==="BOM관리"&&(
+          <div>
+            <SecTitle icon="🔧" title="BOM (완제품 구성품) 관리"/>
+            <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
+              <div style={{flex:"0 0 200px",minWidth:160}}>
+                <div style={{color:"#c8a06a",fontSize:12,marginBottom:8}}>완제품 선택</div>
+                {pMaster.map(p=>(
+                  <div key={p.code} onClick={()=>setBomPCode(p.code)} style={{padding:"8px 12px",borderRadius:8,cursor:"pointer",marginBottom:5,background:bomPCode===p.code?"rgba(200,130,26,.28)":"rgba(255,255,255,.05)",border:`1px solid ${bomPCode===p.code?"#c8821a":"#c8821a22"}`,color:bomPCode===p.code?"#f5c97a":"#c8a06a",fontSize:13}}>
+                    <span style={{color:"#9a7050",fontSize:11}}>[{p.code}] </span>{p.name}
+                    <span style={{float:"right",color:"#8a6040",fontSize:11}}>{bomOf(p.code).length}개</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{flex:1,minWidth:280}}>
+                {bomPCode?(
+                  <>
+                    <div style={{color:"#f5c97a",fontWeight:700,fontSize:15,marginBottom:14}}>
+                      📋 [{bomPCode}] {pName(bomPCode)} <span style={{color:"#8a6a40",fontSize:12}}>({bomOf(bomPCode).length}/10개)</span>
+                    </div>
+                    {bomOf(bomPCode).length===0&&<div style={{textAlign:"center",color:"#8a6a40",padding:20,fontSize:14}}>구성품이 없습니다.</div>}
+                    <Tbl headers={["코드","구성품명","수량","삭제"]}>
+                      {bomOf(bomPCode).map(comp=>(
+                        <tr key={comp.id}>
+                          <Td><span style={{color:"#9a7050",fontSize:12}}>{comp.s_code}</span></Td>
+                          <Td style={{color:"#f5c97a"}}>{sName(comp.s_code)}</Td>
+                          <Td><input type="number" defaultValue={comp.qty} min={1} onBlur={e=>editBomQty(comp.id,e.target.value)} style={{...inp,width:70}}/></Td>
+                          <Td><button onClick={()=>delBomComp(comp.id,comp.s_code)} style={delBtn}>✕</button></Td>
+                        </tr>
+                      ))}
+                    </Tbl>
+                    <div style={{display:"flex",gap:8,alignItems:"flex-end",marginTop:14,borderTop:"1px solid #c8821a33",paddingTop:14}}>
+                      <div>
+                        <div style={lbl}>구성품 선택</div>
+                        <select value={newComp.sCode||sMaster[0]?.code||""} onChange={e=>setNewComp(f=>({...f,sCode:e.target.value}))} style={sel}>
+                          {sMaster.map(s=><option key={s.code} value={s.code}>[{s.code}] {s.name}</option>)}
+                        </select>
+                      </div>
+                      <LblInp label="수량" type="number" value={newComp.qty} onChange={v=>setNewComp(f=>({...f,qty:v}))} placeholder="1" width={80}/>
+                      <button onClick={addBomComp} style={{...primaryBtn,alignSelf:"flex-end"}}>+ 추가</button>
+                    </div>
+                  </>
+                ):<div style={{textAlign:"center",color:"#8a6a40",padding:26,fontSize:14}}>왼쪽에서 완제품을 선택하세요.</div>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════ 제품 마스터 ════ */}
+        {tab==="제품마스터"&&(
+          <div>
+            <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
+              <div style={{flex:1,minWidth:280}}>
+                <SecTitle icon="🏷" title="낱개 제품 코드 마스터"/>
+                <Tbl headers={["코드","제품명","삭제"]}>
+                  {sMaster.map(s=>(
+                    <tr key={s.code}>
+                      <Td><span style={{color:"#c8821a",fontWeight:700}}>{s.code}</span></Td>
+                      <Td style={{color:"#f5c97a"}}>{s.name}</Td>
+                      <Td><button onClick={()=>delSMaster(s.code)} style={delBtn}>✕</button></Td>
+                    </tr>
+                  ))}
+                </Tbl>
+                <div style={{display:"flex",gap:8,marginTop:14,alignItems:"flex-end"}}>
+                  <LblInp label="코드 (예: S008)" value={newSingle.code} onChange={v=>setNewSingle(f=>({...f,code:v}))} placeholder="S008" width={110}/>
+                  <LblInp label="제품명" value={newSingle.name} onChange={v=>setNewSingle(f=>({...f,name:v}))} placeholder="신제품명" width={150}/>
+                  <button onClick={addSMaster} style={{...primaryBtn,alignSelf:"flex-end"}}>+ 등록</button>
+                </div>
+                <div style={{marginTop:8,color:"#8a6a40",fontSize:12}}>※ 삭제 시 비밀번호 486 필요</div>
+              </div>
+              <div style={{flex:1,minWidth:280}}>
+                <SecTitle icon="📦" title="완제품 코드 마스터"/>
+                <Tbl headers={["코드","제품명","BOM","삭제"]}>
+                  {pMaster.map(p=>(
+                    <tr key={p.code}>
+                      <Td><span style={{color:"#c8821a",fontWeight:700}}>{p.code}</span></Td>
+                      <Td style={{color:"#f5c97a"}}>{p.name}</Td>
+                      <Td><span style={{color:"#c8a06a",fontSize:12}}>{bomOf(p.code).length}개</span></Td>
+                      <Td><button onClick={()=>delPMaster(p.code)} style={delBtn}>✕</button></Td>
+                    </tr>
+                  ))}
+                </Tbl>
+                <div style={{display:"flex",gap:8,marginTop:14,alignItems:"flex-end"}}>
+                  <LblInp label="코드 (예: P005)" value={newProduct.code} onChange={v=>setNewProduct(f=>({...f,code:v}))} placeholder="P005" width={110}/>
+                  <LblInp label="제품명" value={newProduct.name} onChange={v=>setNewProduct(f=>({...f,name:v}))} placeholder="신완제품명" width={150}/>
+                  <button onClick={addPMaster} style={{...primaryBtn,alignSelf:"flex-end"}}>+ 등록</button>
+                </div>
+                <div style={{marginTop:8,color:"#8a6a40",fontSize:12}}>※ 등록 후 BOM 탭에서 구성품을 연결하세요.</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════ 생산 로그 ════ */}
+        {tab==="생산로그"&&(
+          <div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+              <SecTitle icon="📋" title="생산 완료 로그"/>
+              <button onClick={resetLog} style={resetBtn}>🗑 전체 리셋</button>
+            </div>
+            {prodLog.length===0&&<div style={{textAlign:"center",color:"#8a6a40",padding:26,fontSize:14}}>생산 로그가 없습니다.</div>}
+            <Tbl headers={["시각","완제품","채널","수량","완제품소비기한","투입 낱개 상세"]}>
+              {prodLog.map(log=>(
+                <tr key={log.id}>
+                  <Td style={{fontSize:12,color:"#9a8060",whiteSpace:"nowrap"}}>{new Date(log.created_at).toLocaleString("ko-KR")}</Td>
+                  <Td><div style={{color:"#9a7050",fontSize:11}}>[{log.p_code}]</div><div style={{color:"#f5c97a",fontWeight:600}}>{pName(log.p_code)}</div></Td>
+                  <Td><span style={{background:log.channel==="대형플랫폼"?"#1a3d5c":"#1a3a1a",color:"#aee",borderRadius:6,padding:"2px 8px",fontSize:12}}>{log.channel}</span></Td>
+                  <Td>{log.qty}</Td>
+                  <Td style={{color:"#6fcf97",fontWeight:600,fontSize:15}}>{fmtDate(log.fin_exp)}</Td>
+                  <Td style={{fontSize:12}}>
+                    {(log.details||[]).map((c,j)=>(
+                      <div key={j} style={{marginBottom:3}}>
+                        <span style={{color:"#9a7050",fontSize:11}}>[{c.sCode}] </span>
+                        <span style={{color:"#f5c97a"}}>{sName(c.sCode)}</span>{" "}
+                        {(c.used||[]).map((u,k)=><span key={k} style={{color:"#c8a06a",marginRight:4}}>{fmtDate(u.expiry)}({u.qty})</span>)}
+                      </div>
+                    ))}
+                  </Td>
+                </tr>
+              ))}
+            </Tbl>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
